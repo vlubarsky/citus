@@ -23,8 +23,10 @@
 #include "catalog/pg_enum.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_trigger.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "commands/trigger.h"
 #include "distributed/master_metadata_utility.h"
 #include "distributed/metadata_cache.h"
 #include "distributed/pg_dist_partition.h"
@@ -35,6 +37,7 @@
 #include "parser/parse_expr.h"
 #include "parser/parse_node.h"
 #include "parser/parse_relation.h"
+#include "parser/parser.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -50,6 +53,7 @@ static void RecordDistributedRelationDependencies(Oid distributedRelationId,
 static Oid SupportFunctionForColumn(Var *partitionColumn, Oid accessMethodId,
 									int16 supportFunctionNumber);
 static bool LocalTableEmpty(Oid tableId);
+static void CreateTruncateTrigger(Oid relationId, char *qualifiedRelationName);
 
 
 /* exports for SQL callable functions */
@@ -76,6 +80,9 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 
 	Relation distributedRelation = NULL;
 	char *distributedRelationName = NULL;
+	Oid distributedRelationSchemaOid = InvalidOid;
+	char *distributedRelationSchema = NULL;
+	char *qualifiedRelationName = NULL;
 	char relationKind = '\0';
 
 	Relation pgDistPartition = NULL;
@@ -99,6 +106,11 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 	 */
 	distributedRelation = relation_open(distributedRelationId, AccessExclusiveLock);
 	distributedRelationName = RelationGetRelationName(distributedRelation);
+	distributedRelationSchemaOid = RelationGetNamespace(distributedRelation);
+	distributedRelationSchema = get_namespace_name(distributedRelationSchemaOid);
+
+	qualifiedRelationName = quote_qualified_identifier(distributedRelationSchema,
+													   distributedRelationName);
 
 	EnsureTableOwner(distributedRelationId);
 
@@ -267,6 +279,15 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 
 	heap_close(pgDistPartition, NoLock);
 	relation_close(distributedRelation, NoLock);
+
+	/*
+	 * PostgreSQL supports truncate trigger for regular relations only.
+	 * Truncate on foreign tables is not supported.
+	 */
+	if (relationKind == RELKIND_RELATION)
+	{
+		CreateTruncateTrigger(distributedRelationId, qualifiedRelationName);
+	}
 
 	PG_RETURN_VOID();
 }
@@ -445,4 +466,33 @@ LocalTableEmpty(Oid tableId)
 	SPI_finish();
 
 	return localTableEmpty;
+}
+
+
+/* CreateTruncateTrigger creates a truncate trigger on table identified by relationId
+ * and assigns citus_truncate_trigger() as handler. The new trigger is named as
+ * citus_truncate_trigger_on_ + schemaName.tableName. Trigger name for relation my_table
+ * from schema my_schema will be citus_truncate_trigger_on_my_schema.my_table to prevent
+ * name conflicts.
+ */
+static void
+CreateTruncateTrigger(Oid relationId, char *qualifiedRelationName)
+{
+	CreateTrigStmt *trigger = NULL;
+	StringInfo triggerName = makeStringInfo();
+	appendStringInfo(triggerName, "citus_truncate_trigger_on_%s", qualifiedRelationName);
+
+	trigger = makeNode(CreateTrigStmt);
+	trigger->trigname = triggerName->data;
+	trigger->relation = NULL;
+	trigger->funcname = SystemFuncName("citus_truncate_trigger");
+	trigger->args = NIL;
+	trigger->row = false;
+	trigger->timing = TRIGGER_TYPE_BEFORE;
+	trigger->events = TRIGGER_TYPE_TRUNCATE;
+	trigger->columns = NIL;
+	trigger->whenClause = NULL;
+	trigger->isconstraint = false;
+
+	CreateTrigger(trigger, NULL, relationId, InvalidOid, InvalidOid, InvalidOid, false);
 }
