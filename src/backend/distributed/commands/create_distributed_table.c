@@ -25,7 +25,9 @@
 #include "catalog/pg_opclass.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "commands/sequence.h"
 #include "distributed/master_metadata_utility.h"
+#include "distributed/master_protocol.h"
 #include "distributed/metadata_cache.h"
 #include "distributed/pg_dist_partition.h"
 #include "nodes/execnodes.h"
@@ -52,6 +54,7 @@ static Oid SupportFunctionForColumn(Var *partitionColumn, Oid accessMethodId,
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(master_create_distributed_table);
+PG_FUNCTION_INFO_V1(master_get_next_collocationid);
 
 
 /*
@@ -242,6 +245,8 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 		CharGetDatum(distributionMethod);
 	newValues[Anum_pg_dist_partition_partkey - 1] =
 		CStringGetTextDatum(distributionKeyString);
+	newValues[Anum_pg_dist_partition_collocationid -1] =
+		DatumGetInt64(master_get_next_collocationid(NULL));
 
 	newTuple = heap_form_tuple(RelationGetDescr(pgDistPartition), newValues, newNulls);
 
@@ -376,4 +381,32 @@ SupportFunctionForColumn(Var *partitionColumn, Oid accessMethodId,
 										   supportFunctionNumber);
 
 	return supportFunctionOid;
+}
+
+
+/*TODO: enable security stuff
+ * 		change variable names
+ * 		*/
+Datum
+master_get_next_collocationid(PG_FUNCTION_ARGS)
+{
+	text *sequenceName = cstring_to_text("pg_dist_collocation_id");
+	Oid sequenceId = ResolveRelationId(sequenceName);
+	Datum sequenceIdDatum = ObjectIdGetDatum(sequenceId);
+	//Oid savedUserId = InvalidOid;
+	//int savedSecurityContext = 0;
+	Datum groupIdDatum = 0;
+
+	/* error out if not schema node */
+	//EnsureSchemaNode();
+
+	//GetUserIdAndSecContext(&savedUserId, &savedSecurityContext);
+	//SetUserIdAndSecContext(CitusExtensionOwner(), SECURITY_LOCAL_USERID_CHANGE);
+
+	/* generate new and unique shardId from sequence */
+	groupIdDatum = DirectFunctionCall1(nextval_oid, sequenceIdDatum);
+
+	//SetUserIdAndSecContext(savedUserId, savedSecurityContext);
+
+	PG_RETURN_DATUM(groupIdDatum);
 }

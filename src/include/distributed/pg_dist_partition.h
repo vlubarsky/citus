@@ -23,6 +23,7 @@ typedef struct FormData_pg_dist_partition
 {
 	Oid logicalrelid;              /* logical relation id; references pg_class oid */
 	char partmethod;               /* partition method; see codes below */
+	int64 collocationId;
 #ifdef CATALOG_VARLEN              /* variable-length fields start here */
 	text partkey;                  /* partition key expression */
 #endif
@@ -39,10 +40,11 @@ typedef FormData_pg_dist_partition *Form_pg_dist_partition;
  *      compiler constants for pg_dist_partitions
  * ----------------
  */
-#define Natts_pg_dist_partition 3
+#define Natts_pg_dist_partition 4
 #define Anum_pg_dist_partition_logicalrelid 1
 #define Anum_pg_dist_partition_partmethod 2
 #define Anum_pg_dist_partition_partkey 3
+#define Anum_pg_dist_partition_collocationid 4
 
 /* valid values for partmethod include append, hash, and range */
 #define DISTRIBUTE_BY_APPEND 'a'
