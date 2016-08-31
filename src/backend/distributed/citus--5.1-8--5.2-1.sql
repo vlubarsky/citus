@@ -36,3 +36,20 @@ BEGIN
 END;
 $collocate_tables$ LANGUAGE plpgsql SET search_path = 'pg_catalog';
 
+DROP FUNCTION IF EXISTS pg_catalog.worker_apply_shard_ddl_command(bigint, text);
+
+CREATE OR REPLACE FUNCTION pg_catalog.worker_apply_shard_ddl_command(bigint, text, text, bigint)
+    RETURNS void
+    LANGUAGE C STRICT
+    AS 'MODULE_PATHNAME', $$worker_apply_shard_ddl_command$$;
+COMMENT ON FUNCTION worker_apply_shard_ddl_command(bigint, text, text, bigint)
+    IS 'extend ddl command with shardId and apply on database';
+
+CREATE OR REPLACE FUNCTION pg_catalog.worker_apply_shard_ddl_command(bigint, text, bigint)
+    RETURNS void
+    LANGUAGE sql
+AS $worker_apply_shard_ddl_command$
+    SELECT pg_catalog.worker_apply_shard_ddl_command($1, 'public', $2, $3);
+$worker_apply_shard_ddl_command$;
+COMMENT ON FUNCTION worker_apply_shard_ddl_command(bigint, text, bigint)
+    IS 'extend ddl command with shardId and apply on database';

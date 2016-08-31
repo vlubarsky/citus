@@ -31,6 +31,7 @@
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
 #include "commands/sequence.h"
@@ -566,6 +567,11 @@ GetTableDDLEvents(Oid relationId)
 	int scanKeyCount = 1;
 	HeapTuple heapTuple = NULL;
 
+	Relation pgConstraint = NULL;
+	SysScanDesc scanDescriptorConstraint = NULL;
+	ScanKeyData scanKeyConstraint[1];
+
+
 	/*
 	 * Set search_path to NIL so that all objects outside of pg_catalog will be
 	 * schema-prefixed. pg_catalog will be added automatically when we call
@@ -665,6 +671,9 @@ GetTableDDLEvents(Oid relationId)
 			Assert(constraintId != InvalidOid);
 
 			statementDef = pg_get_constraintdef_command(constraintId);
+
+			elog(INFO, "statementDef: %s", statementDef);
+
 		}
 		else
 		{
@@ -689,6 +698,48 @@ GetTableDDLEvents(Oid relationId)
 	/* clean up scan and close system catalog */
 	systable_endscan(scanDescriptor);
 	heap_close(pgIndex, AccessShareLock);
+
+
+
+	/* open system catalog and scan all constraints that belong to this table */
+		pgConstraint = heap_open(ConstraintRelationId, AccessShareLock);
+
+		ScanKeyInit(&scanKeyConstraint[0], Anum_pg_constraint_conrelid,
+					BTEqualStrategyNumber, F_OIDEQ, relationId);
+
+		scanDescriptorConstraint = systable_beginscan(pgConstraint,
+				ConstraintRelidIndexId, true, /* indexOK */
+					NULL, scanKeyCount, scanKeyConstraint);
+
+		heapTuple = systable_getnext(scanDescriptorConstraint);
+		while (HeapTupleIsValid(heapTuple))
+		{
+
+			Form_pg_constraint constraintForm = (Form_pg_constraint) GETSTRUCT(heapTuple);
+
+			if (constraintForm->contype == CONSTRAINT_FOREIGN)
+			{
+				/*TODO: check if there exists any better way to get the name */
+				Oid constraintId  = get_relation_constraint_oid(relationId,
+																constraintForm->conname.data,
+																true);
+				char *statementDef = pg_get_constraintdef_command(constraintId);
+
+				elog(INFO, "statementDef: %s", statementDef);
+				tableDDLEventList = lappend(tableDDLEventList, statementDef);
+
+			}
+
+			heapTuple = systable_getnext(scanDescriptorConstraint);
+		}
+
+		/* clean up scan and close system catalog */
+		systable_endscan(scanDescriptorConstraint);
+		heap_close(pgConstraint, AccessShareLock);
+
+
+
+
 
 	/* revert back to original search_path */
 	PopOverrideSearchPath();

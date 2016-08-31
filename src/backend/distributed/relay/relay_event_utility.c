@@ -58,7 +58,7 @@ static void SetSchemaNameIfNotExist(char **schemaName, char *newSchemaName);
  * has the side effect of extending relation names in the parse tree.
  */
 void
-RelayEventExtendNames(Node *parseTree, char *schemaName, uint64 shardId)
+RelayEventExtendNames(Node *parseTree, char *schemaName, uint64 shardId, uint64 referencedShardId)
 {
 	/* we don't extend names in extension or schema commands */
 	NodeTag nodeType = nodeTag(parseTree);
@@ -106,6 +106,20 @@ RelayEventExtendNames(Node *parseTree, char *schemaName, uint64 shardId)
 				{
 					char **indexName = &(command->name);
 					AppendShardIdToName(indexName, shardId);
+				}
+				else if (command->subtype == AT_AddConstraint)
+				{
+					Constraint *constraint = (Constraint *) command->def;
+
+					if (constraint->contype != CONSTR_FOREIGN)
+					{
+						continue;
+					}
+
+					char **referencedShard = &(constraint->pktable->relname);
+
+					AppendShardIdToName(referencedShard, referencedShardId);
+
 				}
 			}
 

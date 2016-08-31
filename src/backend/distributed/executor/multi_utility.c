@@ -1336,6 +1336,7 @@ ExecuteCommandOnWorkerShards(Oid relationId, const char *commandString)
 		char *escapedSchemaName = quote_literal_cstr(schemaName);
 		char *escapedCommandString = quote_literal_cstr(commandString);
 		StringInfo applyCommand = makeStringInfo();
+		uint64 referencedShardId = 0;
 
 		shardConnections = GetShardConnections(shardConnectionHash,
 											   shardId,
@@ -1344,7 +1345,7 @@ ExecuteCommandOnWorkerShards(Oid relationId, const char *commandString)
 
 		/* build the shard ddl command */
 		appendStringInfo(applyCommand, WORKER_APPLY_SHARD_DDL_COMMAND, shardId,
-						 escapedSchemaName, escapedCommandString);
+						 escapedSchemaName, escapedCommandString, referencedShardId);
 
 		ExecuteCommandOnShardPlacements(applyCommand, shardId, shardConnections);
 

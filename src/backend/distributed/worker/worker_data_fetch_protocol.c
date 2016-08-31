@@ -405,12 +405,14 @@ worker_apply_shard_ddl_command(PG_FUNCTION_ARGS)
 	text *schemaNameText = PG_GETARG_TEXT_P(1);
 	text *ddlCommandText = PG_GETARG_TEXT_P(2);
 
+	uint64 referencedShardId = PG_GETARG_INT64(3);
+
 	char *schemaName = text_to_cstring(schemaNameText);
 	const char *ddlCommand = text_to_cstring(ddlCommandText);
 	Node *ddlCommandNode = ParseTreeNode(ddlCommand);
 
 	/* extend names in ddl command and apply extended command */
-	RelayEventExtendNames(ddlCommandNode, schemaName, shardId);
+	RelayEventExtendNames(ddlCommandNode, schemaName, shardId, referencedShardId);
 	ProcessUtility(ddlCommandNode, ddlCommand, PROCESS_UTILITY_TOPLEVEL,
 				   NULL, None_Receiver, NULL);
 

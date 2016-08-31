@@ -20,6 +20,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "catalog/namespace.h"
 #include "catalog/indexing.h"
 #include "distributed/multi_client_executor.h"
 #include "distributed/master_metadata_utility.h"
@@ -46,6 +47,8 @@ static bool WorkerCreateShard(Oid relationId, char *nodeName, uint32 nodePort,
 static bool WorkerShardStats(char *nodeName, uint32 nodePort, Oid relationId,
 							 char *shardName, uint64 *shardSize,
 							 text **shardMinValue, text **shardMaxValue);
+static uint64 FindReferencedShard(char *, uint64);
+
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(master_create_empty_shard);
@@ -443,18 +446,24 @@ WorkerCreateShard(Oid relationId, char *nodeName, uint32 nodePort,
 		List *queryResultList = NIL;
 		StringInfo applyDDLCommand = makeStringInfo();
 
+		/*
+		 * TODO: There could definitely be more than a single
+		 * referenced shard. This is only a POC.
+		 */
+		uint64 referencedShardId = FindReferencedShard(ddlCommand, relationId);
+
 		if (strcmp(schemaName, "public") != 0)
 		{
 			char *escapedSchemaName = quote_literal_cstr(schemaName);
 
 			appendStringInfo(applyDDLCommand, WORKER_APPLY_SHARD_DDL_COMMAND, shardId,
-							 escapedSchemaName, escapedDDLCommand);
+							 escapedSchemaName, escapedDDLCommand, referencedShardId);
 		}
 		else
 		{
 			appendStringInfo(applyDDLCommand,
 							 WORKER_APPLY_SHARD_DDL_COMMAND_WITHOUT_SCHEMA, shardId,
-							 escapedDDLCommand);
+							 escapedDDLCommand, referencedShardId);
 		}
 
 		queryResultList = ExecuteRemoteQuery(nodeName, nodePort, newShardOwner,
@@ -467,6 +476,64 @@ WorkerCreateShard(Oid relationId, char *nodeName, uint32 nodePort,
 	}
 
 	return shardCreated;
+}
+
+
+/*
+ * We need to de-parse the query to get the referenced shardId
+ * */
+uint64 FindReferencedShard(char *ddlCommand, uint64 relationId)
+{
+	Node *ddlCommandNode = ParseTreeNode(ddlCommand);
+	uint64 referencedShardId = 0;
+
+	if (ddlCommandNode->type == T_AlterTableStmt)
+	{
+		AlterTableStmt *alterTableStmt = (AlterTableStmt *) ddlCommandNode;
+		List *commandList = alterTableStmt->cmds;
+		ListCell *commandCell = NULL;
+
+
+		/* TODO: why do we have list of command cells */
+		foreach(commandCell, commandList)
+		{
+			AlterTableCmd *command = (AlterTableCmd *) lfirst(commandCell);
+
+			if (command->subtype == AT_AddConstraint)
+			{
+
+				Constraint *constraint = (Constraint *) command->def;
+				if (constraint->contype != CONSTR_FOREIGN)
+				{
+					continue;
+				}
+
+				char *referencedTableName = (constraint->pktable->relname);
+
+				DistTableCacheEntry *baseTableCacheEntry = DistributedTableCacheEntry(relationId);
+				int baseShardIndex = baseTableCacheEntry->shardIntervalArrayLength;
+
+
+				/* TODO: consider other schemas */
+				Oid referencedTableOid = RelnameGetRelid(referencedTableName);
+
+				DistTableCacheEntry *cacheEntry = DistributedTableCacheEntry(referencedTableOid);
+
+				referencedShardId = cacheEntry->sortedShardIntervalArray[baseShardIndex]->shardId;
+
+				elog(INFO, "referencedTableName:%s, baseShardIndex:%d, referencedShardId:%ld",
+						referencedTableName, baseShardIndex, referencedShardId);
+
+				break;
+			}
+			else
+			{
+				elog(INFO, "Other command type: %d", command->subtype);
+			}
+		}
+	}
+
+	return referencedShardId;
 }
 
 

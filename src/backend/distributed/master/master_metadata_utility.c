@@ -357,11 +357,12 @@ InsertShardRow(Oid relationId, uint64 shardId, char storageType,
 
 	simple_heap_insert(pgDistShard, heapTuple);
 	CatalogUpdateIndexes(pgDistShard, heapTuple);
-	CommandCounterIncrement();
 
 	/* close relation and invalidate previous cache entry */
 	heap_close(pgDistShard, RowExclusiveLock);
 	CitusInvalidateRelcacheByRelid(relationId);
+
+	CommandCounterIncrement();
 }
 
 
