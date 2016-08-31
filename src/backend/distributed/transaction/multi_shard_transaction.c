@@ -18,6 +18,7 @@
 #include "distributed/master_metadata_utility.h"
 #include "distributed/multi_shard_transaction.h"
 #include "nodes/pg_list.h"
+#include "storage/ipc.h"
 
 
 #define INITIAL_CONNECTION_CACHE_SIZE 1001
@@ -29,7 +30,7 @@ static void RegisterShardPlacementXactCallback(void);
 
 /* Global variables used in commit handler */
 static List *shardPlacementConnectionList = NIL;
-static bool isXactCallbackRegistered = false;
+static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
 
 /*
@@ -70,8 +71,6 @@ OpenTransactionsToAllShardPlacements(List *shardIntervalList, char *userName)
 	}
 
 	shardPlacementConnectionList = ConnectionList(shardConnectionHash);
-
-	RegisterShardPlacementXactCallback();
 
 	return shardConnectionHash;
 }
@@ -212,16 +211,30 @@ ConnectionList(HTAB *connectionHash)
 
 
 /*
- * EnableXactCallback ensures the XactCallback for committing/aborting
- * remote worker transactions is registered.
+ * InstallMultiShardXactShmemHook simply installs a hook (intended to be called
+ * once during backend startup), which will itself register all the transaction
+ * callbacks needed by multi-shard transaction logic.
  */
 void
+InstallMultiShardXactShmemHook(void)
+{
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = RegisterShardPlacementXactCallback;
+}
+
+
+/*
+ * RegisterShardPlacementXactCallback registers a transaction callback needed
+ * for multi-shard transactions before calling previous shmem startup hooks.
+ */
+static void
 RegisterShardPlacementXactCallback(void)
 {
-	if (!isXactCallbackRegistered)
+	RegisterXactCallback(CompleteShardPlacementTransactions, NULL);
+
+	if (prev_shmem_startup_hook != NULL)
 	{
-		RegisterXactCallback(CompleteShardPlacementTransactions, NULL);
-		isXactCallbackRegistered = true;
+		prev_shmem_startup_hook();
 	}
 }
 

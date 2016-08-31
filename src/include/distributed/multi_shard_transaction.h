@@ -35,6 +35,7 @@ extern ShardConnections * GetShardConnections(HTAB *shardConnectionHash,
 											  bool *shardConnectionsFound);
 extern List * ConnectionList(HTAB *connectionHash);
 extern void CloseConnections(List *connectionList);
+extern void InstallMultiShardXactShmemHook(void);
 
 
 #endif /* MULTI_SHARD_TRANSACTION_H */
