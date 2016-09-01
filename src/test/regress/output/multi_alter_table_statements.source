@@ -436,18 +436,20 @@ SELECT indexname, tablename FROM pg_indexes WHERE tablename = 'lineitem_alter';
 (1 row)
 
 DROP INDEX temp_index_2;
--- but that multiple ddl statements in a block results in ROLLBACK
+-- and so are multiple ddl statements
 BEGIN;
 CREATE INDEX temp_index_2 ON lineitem_alter(l_orderkey);
 ALTER TABLE lineitem_alter ADD COLUMN first integer;
-ERROR:  distributed DDL commands must not appear within transaction blocks containing other modifications
 COMMIT;
 SELECT indexname, tablename FROM pg_indexes WHERE tablename = 'lineitem_alter';
- indexname | tablename 
------------+-----------
-(0 rows)
+  indexname   |   tablename    
+--------------+----------------
+ temp_index_2 | lineitem_alter
+(1 row)
 
--- and distributed SELECTs cannot appear after ALTER
+ALTER TABLE lineitem_alter DROP COLUMN first;
+DROP INDEX temp_index_2;
+-- but distributed SELECTs cannot appear after ALTER
 BEGIN;
 CREATE INDEX temp_index_2 ON lineitem_alter(l_orderkey);
 SELECT l_orderkey FROM lineitem_alter LIMIT 0;
@@ -550,7 +552,8 @@ ORDER BY attnum;
  null_column                   | integer
  ........pg.dropped.22........ | -
  ........pg.dropped.23........ | -
-(29 rows)
+ ........pg.dropped.24........ | -
+(30 rows)
 
 \c - - - :master_port
 -- verify that we don't intercept DDL commands if propagation is turned off

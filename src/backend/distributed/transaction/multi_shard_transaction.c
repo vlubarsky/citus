@@ -123,10 +123,26 @@ BeginTransactionOnShardPlacements(uint64 shardId, char *userName)
 	foreach(placementCell, shardPlacementList)
 	{
 		ShardPlacement *shardPlacement = (ShardPlacement *) lfirst(placementCell);
-		PGconn *connection = ConnectToNode(shardPlacement->nodeName,
-										   shardPlacement->nodePort, userName);
+		XactModificationType oldModLevel = XactModificationLevel;
+		PGconn *connection = NULL;
 		TransactionConnection *transactionConnection = NULL;
 		PGresult *result = NULL;
+
+		/*
+		 * This is extremely hacky, but allows adding connections for new shard
+		 * placements during a pure-DDL transaction block. Without this, we'd
+		 * get an error from ConnectToNode about not permitting new connections
+		 * after the first modification in a transaction block. We couldn't get
+		 * to this point if data modifications have already occurred (because
+		 * of the check in ExecuteDistributedDDLCommand), so we know at most
+		 * only schema modifications have already happened.
+		 *
+		 * FIXME: Remove this hack during big connection/transaction revision
+		 */
+		XactModificationLevel = XACT_MODIFICATION_INVALID;
+		connection = ConnectToNode(shardPlacement->nodeName, shardPlacement->nodePort,
+								   userName);
+		XactModificationLevel = oldModLevel;
 
 		if (connection == NULL)
 		{

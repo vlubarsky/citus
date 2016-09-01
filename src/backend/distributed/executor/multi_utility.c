@@ -1255,11 +1255,11 @@ ExecuteDistributedDDLCommand(Oid relationId, const char *ddlCommandString,
 {
 	bool executionOK = false;
 
-	if (XactModificationLevel > XACT_MODIFICATION_NONE)
+	if (XactModificationLevel == XACT_MODIFICATION_DATA)
 	{
 		ereport(ERROR, (errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
 						errmsg("distributed DDL commands must not appear within "
-							   "transaction blocks containing other modifications")));
+							   "transaction blocks containing data modifications")));
 	}
 
 	ShowNoticeIfNotUsing2PC();
