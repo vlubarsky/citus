@@ -363,7 +363,7 @@ CopyToExistingShards(CopyStmt *copyStatement, char *completionTag)
 	ShardInterval **shardIntervalCache = NULL;
 	bool useBinarySearch = false;
 
-	HTAB *shardConnectionHash = NULL;
+	HTAB *copyConnectionHash = NULL;
 	ShardConnections *shardConnections = NULL;
 	List *connectionList = NIL;
 
@@ -465,7 +465,7 @@ CopyToExistingShards(CopyStmt *copyStatement, char *completionTag)
 	 * PG_CATCH. Otherwise, it may be undefined in the PG_CATCH (see sigsetjmp
 	 * documentation).
 	 */
-	shardConnectionHash = CreateShardConnectionHash();
+	copyConnectionHash = CreateShardConnectionHash(MessageContext);
 
 	/* we use a PG_TRY block to roll back on errors (e.g. in NextCopyFrom) */
 	PG_TRY();
@@ -534,9 +534,8 @@ CopyToExistingShards(CopyStmt *copyStatement, char *completionTag)
 			MemoryContextSwitchTo(oldContext);
 
 			/* get existing connections to the shard placements, if any */
-			shardConnections = GetShardConnections(shardConnectionHash,
-												   shardId,
-												   &shardConnectionsFound);
+			shardConnections = GetShardHashConnections(copyConnectionHash, shardId,
+													   &shardConnectionsFound);
 			if (!shardConnectionsFound)
 			{
 				/* open connections and initiate COPY on shard placements */
@@ -560,7 +559,7 @@ CopyToExistingShards(CopyStmt *copyStatement, char *completionTag)
 			processedRowCount += 1;
 		}
 
-		connectionList = ConnectionList(shardConnectionHash);
+		connectionList = ConnectionList(copyConnectionHash);
 
 		/* send copy binary footers to all shard placements */
 		if (copyOutState->binary)
@@ -590,7 +589,7 @@ CopyToExistingShards(CopyStmt *copyStatement, char *completionTag)
 		List *abortConnectionList = NIL;
 
 		/* roll back all transactions */
-		abortConnectionList = ConnectionList(shardConnectionHash);
+		abortConnectionList = ConnectionList(copyConnectionHash);
 		EndRemoteCopy(abortConnectionList, false);
 		AbortRemoteTransactions(abortConnectionList);
 		CloseConnections(abortConnectionList);
