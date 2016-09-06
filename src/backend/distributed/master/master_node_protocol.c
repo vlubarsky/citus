@@ -61,7 +61,8 @@ int ShardPlacementPolicy = SHARD_PLACEMENT_ROUND_ROBIN;
 
 
 static Datum WorkerNodeGetDatum(WorkerNode *workerNode, TupleDesc tupleDescriptor);
-
+static List * GetTableCreateEvent(Oid relationId);
+static List * GetTableConstraints(Oid relationId);
 
 /* exports for SQL callable functions */
 PG_FUNCTION_INFO_V1(master_get_table_metadata);
@@ -552,6 +553,20 @@ List *
 GetTableDDLEvents(Oid relationId)
 {
 	List *tableDDLEventList = NIL;
+
+	List *createTableEvents = GetTableCreateEvent(relationId);
+	List *createConstraintsEvents = GetTableConstraints(relationId);
+
+	tableDDLEventList = list_concat(createTableEvents, createConstraintsEvents);
+
+	return tableDDLEventList;
+}
+
+
+static List *
+GetTableCreateEvent(Oid relationId)
+{
+	List *tableDDLEventList = NIL;
 	char tableType = 0;
 	List *sequenceIdlist = getOwnedSequences(relationId);
 	ListCell *sequenceIdCell;
@@ -619,6 +634,40 @@ GetTableDDLEvents(Oid relationId)
 	{
 		tableDDLEventList = lappend(tableDDLEventList, tableColumnOptionsDef);
 	}
+
+	/* revert back to original search_path */
+	PopOverrideSearchPath();
+
+	return tableDDLEventList;
+}
+
+static List *
+GetTableConstraints(Oid relationId)
+{
+	List *tableDDLEventList = NIL;
+	char tableType = 0;
+	List *sequenceIdlist = getOwnedSequences(relationId);
+	ListCell *sequenceIdCell;
+	char *tableSchemaDef = NULL;
+	char *tableColumnOptionsDef = NULL;
+	char *schemaName = NULL;
+	Oid schemaId = InvalidOid;
+
+	Relation pgIndex = NULL;
+	SysScanDesc scanDescriptor = NULL;
+	ScanKeyData scanKey[1];
+	int scanKeyCount = 1;
+	HeapTuple heapTuple = NULL;
+
+	/*
+	 * Set search_path to NIL so that all objects outside of pg_catalog will be
+	 * schema-prefixed. pg_catalog will be added automatically when we call
+	 * PushOverrideSearchPath(), since we set addCatalog to true;
+	 */
+	OverrideSearchPath *overridePath = GetOverrideSearchPath(CurrentMemoryContext);
+	overridePath->schemas = NIL;
+	overridePath->addCatalog = true;
+	PushOverrideSearchPath(overridePath);
 
 	/* open system catalog and scan all indexes that belong to this table */
 	pgIndex = heap_open(IndexRelationId, AccessShareLock);
@@ -695,7 +744,6 @@ GetTableDDLEvents(Oid relationId)
 
 	return tableDDLEventList;
 }
-
 
 /*
  * WorkerNodeGetDatum converts the worker node passed to it into its datum

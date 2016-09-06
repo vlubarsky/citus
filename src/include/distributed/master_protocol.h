@@ -91,6 +91,7 @@ extern int ShardPlacementPolicy;
 extern bool CStoreTable(Oid relationId);
 extern Oid ResolveRelationId(text *relationName);
 extern List * GetTableDDLEvents(Oid relationId);
+
 extern void CheckDistributedTable(Oid relationId);
 extern void CreateShardPlacements(Oid relationId, int64 shardId, List *ddlEventList,
 								  char *newPlacementOwner, List *workerNodeList,

@@ -54,15 +54,15 @@ static void ReceiveResourceCleanup(int32 connectionId, const char *filename,
 								   int32 fileDescriptor);
 static void DeleteFile(const char *filename);
 static void FetchTableCommon(text *tableName, uint64 remoteTableSize,
-							 ArrayType *nodeNameObject, ArrayType *nodePortObject,
+							 ArrayType *nodeNameObject, ArrayType *nodePortObject, bool createTable,
 							 bool (*FetchTableFunction)(const char *, uint32,
-														const char *));
+														const char *, bool));
 static uint64 LocalTableSize(Oid relationId);
 static uint64 ExtractShardId(const char *tableName);
 static bool FetchRegularTable(const char *nodeName, uint32 nodePort,
-							  const char *tableName);
+							  const char *tableName, bool createTable);
 static bool FetchForeignTable(const char *nodeName, uint32 nodePort,
-							  const char *tableName);
+							  const char *tableName, bool createTable);
 static const char * RemoteTableOwner(const char *nodeName, uint32 nodePort,
 									 const char *tableName);
 static StringInfo ForeignFilePath(const char *nodeName, uint32 nodePort,
@@ -430,12 +430,14 @@ worker_fetch_regular_table(PG_FUNCTION_ARGS)
 	uint64 generationStamp = PG_GETARG_INT64(1);
 	ArrayType *nodeNameObject = PG_GETARG_ARRAYTYPE_P(2);
 	ArrayType *nodePortObject = PG_GETARG_ARRAYTYPE_P(3);
+	bool createTable = PG_GETARG_BOOL(4);
+
 
 	/*
 	 * Run common logic to fetch the remote table, and use the provided function
 	 * pointer to perform the actual table fetching.
 	 */
-	FetchTableCommon(regularTableName, generationStamp, nodeNameObject, nodePortObject,
+	FetchTableCommon(regularTableName, generationStamp, nodeNameObject, nodePortObject, createTable,
 					 &FetchRegularTable);
 
 	PG_RETURN_VOID();
@@ -454,12 +456,13 @@ worker_fetch_foreign_file(PG_FUNCTION_ARGS)
 	uint64 foreignFileSize = PG_GETARG_INT64(1);
 	ArrayType *nodeNameObject = PG_GETARG_ARRAYTYPE_P(2);
 	ArrayType *nodePortObject = PG_GETARG_ARRAYTYPE_P(3);
+	bool createTable = true;
 
 	/*
 	 * Run common logic to fetch the remote table, and use the provided function
 	 * pointer to perform the actual table fetching.
 	 */
-	FetchTableCommon(foreignTableName, foreignFileSize, nodeNameObject, nodePortObject,
+	FetchTableCommon(foreignTableName, foreignFileSize, nodeNameObject, nodePortObject, createTable,
 					 &FetchForeignTable);
 
 	PG_RETURN_VOID();
@@ -474,8 +477,8 @@ worker_fetch_foreign_file(PG_FUNCTION_ARGS)
  */
 static void
 FetchTableCommon(text *tableNameText, uint64 remoteTableSize,
-				 ArrayType *nodeNameObject, ArrayType *nodePortObject,
-				 bool (*FetchTableFunction)(const char *, uint32, const char *))
+				 ArrayType *nodeNameObject, ArrayType *nodePortObject, bool createTable,
+				 bool (*FetchTableFunction)(const char *, uint32, const char *, bool))
 {
 	uint64 shardId = INVALID_SHARD_ID;
 	Oid relationId = InvalidOid;
@@ -561,7 +564,7 @@ FetchTableCommon(text *tableNameText, uint64 remoteTableSize,
 		char *nodeName = TextDatumGetCString(nodeNameDatum);
 		uint32 nodePort = DatumGetUInt32(nodePortDatum);
 
-		tableFetched = (*FetchTableFunction)(nodeName, nodePort, tableName);
+		tableFetched = (*FetchTableFunction)(nodeName, nodePort, tableName, createTable);
 
 		nodeIndex++;
 	}
@@ -688,7 +691,7 @@ ExtractShardId(const char *tableName)
  * false. On other types of failures, the function errors out.
  */
 static bool
-FetchRegularTable(const char *nodeName, uint32 nodePort, const char *tableName)
+FetchRegularTable(const char *nodeName, uint32 nodePort, const char *tableName, bool createTable)
 {
 	StringInfo localFilePath = NULL;
 	StringInfo remoteCopyCommand = NULL;
@@ -728,33 +731,37 @@ FetchRegularTable(const char *nodeName, uint32 nodePort, const char *tableName)
 	}
 	tableOwnerId = get_role_oid(tableOwner, false);
 
-	/* fetch the ddl commands needed to create the table */
-	ddlCommandList = TableDDLCommandList(nodeName, nodePort, tableName);
-	if (ddlCommandList == NIL)
+	if (createTable)
 	{
-		return false;
+		/* fetch the ddl commands needed to create the table */
+		ddlCommandList = TableDDLCommandList(nodeName, nodePort, tableName);
+		if (ddlCommandList == NIL)
+		{
+			return false;
+		}
+
+		/*
+		 * Apply DDL commands against the database. Note that on failure from here
+		 * on, we immediately error out instead of returning false.  Have to do
+		 * this as the table's owner to ensure the local table is created with
+		 * compatible permissions.
+		 */
+		GetUserIdAndSecContext(&savedUserId, &savedSecurityContext);
+		SetUserIdAndSecContext(tableOwnerId, SECURITY_LOCAL_USERID_CHANGE);
+
+		foreach(ddlCommandCell, ddlCommandList)
+		{
+			StringInfo ddlCommand = (StringInfo) lfirst(ddlCommandCell);
+			Node *ddlCommandNode = ParseTreeNode(ddlCommand->data);
+
+			ProcessUtility(ddlCommandNode, ddlCommand->data, PROCESS_UTILITY_TOPLEVEL,
+						   NULL, None_Receiver, NULL);
+			CommandCounterIncrement();
+		}
+
+		SetUserIdAndSecContext(savedUserId, savedSecurityContext);
 	}
 
-	/*
-	 * Apply DDL commands against the database. Note that on failure from here
-	 * on, we immediately error out instead of returning false.  Have to do
-	 * this as the table's owner to ensure the local table is created with
-	 * compatible permissions.
-	 */
-	GetUserIdAndSecContext(&savedUserId, &savedSecurityContext);
-	SetUserIdAndSecContext(tableOwnerId, SECURITY_LOCAL_USERID_CHANGE);
-
-	foreach(ddlCommandCell, ddlCommandList)
-	{
-		StringInfo ddlCommand = (StringInfo) lfirst(ddlCommandCell);
-		Node *ddlCommandNode = ParseTreeNode(ddlCommand->data);
-
-		ProcessUtility(ddlCommandNode, ddlCommand->data, PROCESS_UTILITY_TOPLEVEL,
-					   NULL, None_Receiver, NULL);
-		CommandCounterIncrement();
-	}
-
-	SetUserIdAndSecContext(savedUserId, savedSecurityContext);
 
 	/*
 	 * Copy local file into the relation. We call ProcessUtility() instead of
@@ -787,7 +794,7 @@ FetchRegularTable(const char *nodeName, uint32 nodePort, const char *tableName)
  * commands against the local database, the function errors out.
  */
 static bool
-FetchForeignTable(const char *nodeName, uint32 nodePort, const char *tableName)
+FetchForeignTable(const char *nodeName, uint32 nodePort, const char *tableName, bool createTable)
 {
 	StringInfo localFilePath = NULL;
 	StringInfo remoteFilePath = NULL;
@@ -821,13 +828,15 @@ FetchForeignTable(const char *nodeName, uint32 nodePort, const char *tableName)
 		return false;
 	}
 
-	/* fetch the ddl commands needed to create the table */
-	ddlCommandList = TableDDLCommandList(nodeName, nodePort, tableName);
-	if (ddlCommandList == NIL)
+	if (createTable)
 	{
-		return false;
+		/* fetch the ddl commands needed to create the table */
+		ddlCommandList = TableDDLCommandList(nodeName, nodePort, tableName);
+		if (ddlCommandList == NIL)
+		{
+			return false;
+		}
 	}
-
 	alterTableCommand = makeStringInfo();
 	appendStringInfo(alterTableCommand, SET_FOREIGN_TABLE_FILENAME, tableName,
 					 localFilePath->data);
