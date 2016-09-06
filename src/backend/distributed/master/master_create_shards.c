@@ -52,6 +52,8 @@
 static void CheckHashPartitionedTable(Oid distributedTableId);
 static text * IntegerToText(int32 value);
 static bool CheckTablesColocated(Oid distributedTableId1, Oid distributedTableId2);
+static bool CheckForeignReferencedTablesColocated(Oid distributedTableId,
+												  List *ddlCommandList);
 
 
 /* declarations for dynamic loading */
@@ -81,6 +83,7 @@ master_create_worker_shards(PG_FUNCTION_ARGS)
 	char shardStorageType = '\0';
 	List *workerNodeList = NIL;
 	List *ddlCommandList = NIL;
+	ListCell *ddlCommandCell = NULL;
 	int32 workerNodeCount = 0;
 	uint32 placementAttemptCount = 0;
 	uint64 hashTokenIncrement = 0;
@@ -138,6 +141,17 @@ master_create_worker_shards(PG_FUNCTION_ARGS)
 
 	/* retrieve the DDL commands for the table */
 	ddlCommandList = GetTableDDLEvents(distributedTableId);
+
+	/* ensure that if foreign key constraint exists, tables are co-located */
+	if (!CheckForeignReferencedTablesColocated(distributedTableId, ddlCommandList))
+	{
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("foreign key constraint is defined between tables that "
+							   "are not co-located"),
+						errdetail("Citus only supports foreign key constraints if "
+								  "the referencing table and referenced table are "
+								  "co-located.")));
+	}
 
 	workerNodeCount = list_length(workerNodeList);
 	if (replicationFactor > workerNodeCount)
@@ -265,4 +279,60 @@ CheckTablesColocated(Oid distributedTableId1, Oid distributedTableId2)
 	DistTableCacheEntry *cacheEntry2 = DistributedTableCacheEntry(distributedTableId2);
 
 	return cacheEntry1->colocationGroupId == cacheEntry2->colocationGroupId;
+}
+
+
+/*
+ * CheckForeignReferencedTablesColocated function checks whether given table is
+ * co-located with all the tables which it have foreign constraint on. If table is
+ * co-located with all the tables it referenced, this function returns true.
+ */
+static bool
+CheckForeignReferencedTablesColocated(Oid distributedTableId, List *ddlCommandList)
+{
+	ListCell *ddlCommandCell = NULL;
+
+	foreach(ddlCommandCell, ddlCommandList)
+	{
+		char *ddlCommand = (char *) lfirst(ddlCommandCell);
+		Node *ddlCommandNode = ParseTreeNode(ddlCommand);
+
+		if (ddlCommandNode->type != T_AlterTableStmt)
+		{
+			continue;
+		}
+
+		AlterTableStmt *alterTableStmt = (AlterTableStmt *) ddlCommandNode;
+		List *commandList = alterTableStmt->cmds;
+		ListCell *commandCell = NULL;
+
+		foreach(commandCell, commandList)
+		{
+			AlterTableCmd *command = (AlterTableCmd *) lfirst(commandCell);
+
+			if (command->subtype != AT_AddConstraint)
+			{
+				continue;
+			}
+
+			Constraint *constraint = (Constraint *) command->def;
+
+			if (constraint->contype != CONSTR_FOREIGN)
+			{
+				continue;
+			}
+
+			char *refTableName = constraint->pktable->relname;
+			char *refTableSchemaName = constraint->pktable->schemaname;
+			bool missingOK = false;
+			Oid refTableSchemaId = get_namespace_oid(refTableSchemaName, missingOK);
+			Oid refTableOid = get_relname_relid(refTableName, refTableSchemaId);
+
+			if (!CheckTablesColocated(distributedTableId, refTableOid)){
+				return false;
+			}
+		}
+	}
+
+	return true;
 }
