@@ -51,6 +51,7 @@
 /* local function forward declarations */
 static void CheckHashPartitionedTable(Oid distributedTableId);
 static text * IntegerToText(int32 value);
+static bool CheckTablesColocated(Oid distributedTableId1, Oid distributedTableId2);
 
 
 /* declarations for dynamic loading */
@@ -250,4 +251,18 @@ IntegerToText(int32 value)
 	valueText = cstring_to_text(valueString->data);
 
 	return valueText;
+}
+
+
+/*
+ * CheckTablesColocated function checks whether given two tables are co-located and
+ * returns true if they are co-located.
+ */
+static bool
+CheckTablesColocated(Oid distributedTableId1, Oid distributedTableId2)
+{
+	DistTableCacheEntry *cacheEntry1 = DistributedTableCacheEntry(distributedTableId1);
+	DistTableCacheEntry *cacheEntry2 = DistributedTableCacheEntry(distributedTableId2);
+
+	return cacheEntry1->colocationGroupId == cacheEntry2->colocationGroupId;
 }

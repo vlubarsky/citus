@@ -25,7 +25,9 @@
 #include "catalog/pg_opclass.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "commands/sequence.h"
 #include "distributed/master_metadata_utility.h"
+#include "distributed/master_protocol.h"
 #include "distributed/metadata_cache.h"
 #include "distributed/pg_dist_partition.h"
 #include "executor/spi.h"
@@ -91,6 +93,11 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 	HeapTuple newTuple = NULL;
 	Datum newValues[Natts_pg_dist_partition];
 	bool newNulls[Natts_pg_dist_partition];
+
+	text *colocationSequenceName = cstring_to_text("pg_dist_colocation_id");
+	Oid colocationSequenceId = ResolveRelationId(colocationSequenceName);
+	Datum colocationSequenceIdDatum = ObjectIdGetDatum(colocationSequenceId);
+	Datum nextColocationId = DirectFunctionCall1(nextval_oid, colocationSequenceIdDatum);
 
 	/*
 	 * Lock target relation with an access exclusive lock - there's no way to
@@ -255,6 +262,7 @@ master_create_distributed_table(PG_FUNCTION_ARGS)
 		CharGetDatum(distributionMethod);
 	newValues[Anum_pg_dist_partition_partkey - 1] =
 		CStringGetTextDatum(distributionKeyString);
+	newValues[Anum_pg_dist_partition_colocationid - 1] = nextColocationId;
 
 	newTuple = heap_form_tuple(RelationGetDescr(pgDistPartition), newValues, newNulls);
 
